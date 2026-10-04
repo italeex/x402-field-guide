@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reading an x402 402 Response and Verifying Base Contracts (Free API Field Notes)</title>
+<meta name="description" content="A practical guide to reading a real x402 Payment Required challenge on Base, and four free RPC checks that tell you whether a Base address is a contract, a payer, or a scam. Includes captured live output, not theory.">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<link rel="canonical" href="https://italeex.github.io/x402-field-guide/">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Reading an x402 402 Response and Verifying Base Contracts">
+<meta property="og:description" content="What a payment-required challenge actually contains, and four free RPC checks that tell you whether a Base address is safe to send to. Live captured output.">
+<meta property="og:url" content="https://italeex.github.io/x402-field-guide/">
+<meta name="twitter:card" content="summary">
+<style>
+  :root { --ink:#16202b; --muted:#5a6b7d; --line:#dfe6ed; --accent:#0a6c74; --code:#0f1720; --warn:#8a3d00; --bg:#fbfcfd; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:17px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--ink); background:var(--bg); }
+  main { max-width:46rem; margin:0 auto; padding:2.5rem 1.25rem 5rem; }
+  h1 { font-size:1.95rem; line-height:1.2; margin:0 0 .5rem; letter-spacing:-.02em; }
+  h2 { font-size:1.3rem; margin:2.8rem 0 .7rem; padding-bottom:.35rem; border-bottom:1px solid var(--line); letter-spacing:-.01em; }
+  h3 { font-size:1.05rem; margin:1.8rem 0 .5rem; }
+  p, ul, ol { margin:0 0 1rem; }
+  a { color:var(--accent); }
+  code { background:#eef2f6; padding:.12em .38em; border-radius:3px; font-size:.87em; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  pre { background:var(--code); color:#e6edf3; padding:1rem 1.1rem; border-radius:6px; overflow-x:auto; font-size:.83rem; line-height:1.5; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  pre code { background:none; color:inherit; padding:0; font-size:inherit; }
+  .sub { color:var(--muted); font-size:1.05rem; margin-bottom:1.6rem; }
+  .box { border-left:3px solid var(--accent); background:#f0f7f8; padding:.9rem 1.1rem; margin:1.4rem 0; border-radius:0 5px 5px 0; }
+  .warn { border-left-color:var(--warn); background:#fdf5ec; }
+  .meta { font-size:.85rem; color:var(--muted); border-top:1px solid var(--line); margin-top:3rem; padding-top:1.2rem; }
+  .tag { display:inline-block; background:#eef2f6; color:var(--muted); border-radius:3px; padding:.1rem .45rem; font-size:.78rem; margin-right:.3rem; }
+  table { border-collapse:collapse; width:100%; margin:1.2rem 0; font-size:.92rem; }
+  th, td { border:1px solid var(--line); padding:.5rem .6rem; text-align:left; vertical-align:top; }
+  th { background:#f2f5f8; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Reading an x402 402 Response, and Four Ways to Check a Base Address</h1>
+<p class="sub">Practical field notes for anyone calling a paid API or about to send USDC. Every command and response here was captured against live endpoints — no invented output.</p>
+
+<p><span class="tag">x402</span><span class="tag">Base</span><span class="tag">RPC</span><span class="tag">security</span></p>
+
+<p>The <a href="https://x402.org">x402</a> protocol lets a machine pay for a single HTTP
+request instead of holding a card or an API key. It reuses HTTP status <code>402 Payment
+Required</code> as the negotiation step. Most write-ups describe the protocol; the part
+that actually breaks people's clients is the shape of the response and how to sanity-check
+what you're paying. This page covers both, using a real seller.</p>
+
+<div class="box">
+<strong>Scope and honesty note.</strong> I do not have clients, traffic numbers, or revenue
+to report — this is a new page with a new domain and no promotion yet. Everything below is
+something you can re-run yourself in under a minute. Where I made a mistake, I say so.
+</div>
+
+<h2>1. What a 402 actually returns</h2>
+
+<p>A paid endpoint advertises itself. Here is a real request to a real Base seller:</p>
+
+<pre><code>curl -s -i -X POST https://apiacre.com/v1/crypto/base-contract-inspect \
+  -H 'content-type: application/json' \
+  -d '{"contract":"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913","block_tag":"safe"}'</code></pre>
+
+<p>The response:</p>
+
+<pre><code>HTTP/2 402
+content-type: application/json
+content-length: 2
+payment-required: eyJ4ND...fX19   (6284 characters, base64)
+link: &lt;https://apiacre.com/catalog/...?from=quote&gt;; rel="service-desc"
+link: &lt;https://apiacre.com/try/...?from=quote&gt;; rel="payment"
+cache-control: no-store
+
+{}</code></pre>
+
+<div class="box warn">
+<strong>The body is <code>{}</code> — two bytes.</strong> Every instruction for completing
+the payment lives in the <code>payment-required</code> <em>header</em>. A client that parses
+the JSON body and looks for the payment terms will find nothing and conclude the endpoint is
+broken. It isn't. Decode the header.
+</div>
+
+<h3>Decoding it</h3>
+
+<pre><code># capture the header, strip the "payment-required:" prefix, base64 -d
+curl -s -D - -o /dev/null -X POST "$URL" \
+  -H 'content-type: application/json' \
+  -d "$BODY" \
+  | grep -i '^payment-required:' | cut -d' ' -f2- \
+  | base64 -d | jq .</code></pre>
+
+<p>The decoded challenge has this structure. These are real values from the response above:</p>
+
+<pre><code>{
+  "x402Version": 2,
+  "error": "Payment required",
+  "resource": {
+    "url": "https://apiacre.com/v1/crypto/base-contract-inspect",
+    "mimeType": "application/json",
+    "serviceName": "API Acre",
+    "tags": ["crypto","evm","base","ethereum","contract"]
+  },
+  "accepts": [
+    { "scheme": "exact",
+      "network": "eip155:8453",
+      "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "amount": "5000",
+      "payTo": "0xa0BFa4f07281c9b248DC3AED2217836BcA24869B",
+      "maxTimeoutSeconds": 300,
+      "extra": { "name": "USD Coin", "version": "2" } },
+    { "scheme": "exact",
+      "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+      "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "amount": "5000",
+      "payTo": "B4CHWQeQn7GDLZD2aW6hpGG2bEseisBFLZYECA3HDLan" }
+  ],
+  "extensions": {
+    "bazaar": { "info": { "input": {...}, "output": {...} }, "schema": {...} },
+    "payment-identifier": { "info": { "required": false }, "schema": {...} }
+  }
+}</code></pre>
+
+<table>
+<tr><th>Field</th><th>Why you care</th></tr>
+<tr><td><code>accepts[].amount</code></td><td>Atomic units. <code>"5000"</code> with <code>name: "USD Coin"</code> means 5000 × 10⁻⁶ = <strong>$0.005</strong>. Reading it as 5000 dollars is the classic error.</td></tr>
+<tr><td><code>accepts[].network</code></td><td>CAIP-2 chain id. <code>eip155:8453</code> is Base; the <code>solana:</code> entry is a second rail for the same price. Pick by where your funds already are.</td></tr>
+<tr><td><code>accepts[].payTo</code></td><td>Where money goes. Different per rail — this is the seller's revenue address.</td></tr>
+<tr><td><code>maxTimeoutSeconds: 300</code></td><td>Your authorization expires in 5 minutes. If your retry loop is slower, it fails with an expired signature, not with a helpful error.</td></tr>
+<tr><td><code>extensions.bazaar</code></td><td>A complete JSON Schema for the input <em>and</em> the output, plus a filled-in example. This is how an agent binds the call without scraping docs.</td></tr>
+<tr><td><code>payment-identifier</code></td><td>Optional idempotency key (16–128 chars). Send it on retries so a timeout doesn't double-charge you.</td></tr>
+</table>
+
+<h2>2. The polite path: a 405 that tells you everything</h2>
+
+<p>Before paying anything, <code>GET</code> the endpoint:</p>
+
+<pre><code>$ curl -s -i https://apiacre.com/v1/crypto/base-contract-inspect
+HTTP/2 405
+allow: POST
+content-type: application/problem+json
+
+{"type":"https://apiacre.com/problems/paid-api-requires-post",
+ "title":"Paid API execution requires POST",
+ "status":405,
+ "detail":"Send the example as JSON with POST. The unpaid POST returns an x402 v2
+           PAYMENT-REQUIRED challenge ... This GET made no payment and executed no
+           service.",
+ "request":{"method":"POST","contentType":"application/json",
+   "example":{"contract":"0x833589...","block_tag":"safe"}},
+ "purchase":{"endpoint":"...","method":"POST","protocol":"..."}}</code></pre>
+
+<p>That is an unusually good 405: a machine-readable description, the exact request body,
+and an explicit statement that nothing was charged. Well-designed paid APIs let you
+evaluate the offer before you buy it. Check for this — a seller who returns a bare 404
+instead is hiding the terms.</p>
+
+<h2>3. Is the paywall real? Two curls</h2>
+
+<p>A 402 proves someone wrote terms, not that anyone enforced them. The classic failure is
+a server that checks only whether a payment header <em>exists</em>:</p>
+
+<pre><code>// this is a fake paywall
+const paid = !!(req.headers['payment-signature'] || req.headers['x-payment']);
+if (!paid) return send402();
+// else: serve the product</code></pre>
+
+<p>Probe it. Same request, three times:</p>
+
+<pre><code># 1. no header
+curl -s -o /dev/null -w '%{http_code} %{size_download}\n' -X POST "$URL" -d "$BODY"
+
+# 2. garbage header
+curl -s -o /dev/null -w '%{http_code} %{size_download}\n' -X POST "$URL" \
+     -H 'PAYMENT-SIGNATURE: totally-bogus-not-signed' -d "$BODY"</code></pre>
+
+<p>If you get <code>200</code> with real payload data on request 2, the paywall is decorative
+and the product is being given away free.</p>
+
+<h3>Result against the seller above</h3>
+
+<pre><code>no header                            -&gt; 402   content-length: 2
+PAYMENT-SIGNATURE: totally-bogus...   -&gt; 402   content-length: 2</code></pre>
+
+<p>The bypass does not work — this seller verifies the payment. Two caveats worth knowing:
+both responses are <code>content-length: 2</code>, so <strong>you cannot distinguish
+"correctly rejected" from "rejected for a different reason" by size alone</strong>. And a
+single seller is one data point: audit each endpoint you depend on, because enforcement
+is per-route code and one unguarded route in an otherwise honest API is still a free leak.</p>
+
+<h2>4. Before you pay anyone: four free checks on a Base address</h2>
+
+<p>You do not need a paid API to tell a contract from a scammer. Base's public JSON-RPC is
+free and read-only. USDC on Base is at
+<code>0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913</code>.</p>
+
+<h3>Check 1 — is it a contract or an EOA?</h3>
+<pre><code>curl -s -X POST https://base.drpc.org -H 'content-type: application/json' \
+ -d '{"jsonrpc":"2.0","id":1,"method":"eth_getCode",
+      "params":["0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913","latest"]}'
+# -&gt; "0x60806040526004361061005a5760003560e01c80..."</code></pre>
+<p><code>"0x"</code> means an externally-owned account — a plain wallet, no code. Anything
+longer is a contract. <strong>A wallet posing as a contract address can still sign a
+transaction</strong>, so this is a necessary check, not a sufficient one.</p>
+
+<h3>Check 2 — has this address ever sent anything?</h3>
+<pre><code>curl -s -X POST https://base.drpc.org -H 'content-type: application/json' \
+ -d '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount",
+      "params":["0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913","latest"]}'
+# -&gt; "0x1"</code></pre>
+<p>A nonce of <code>0x0</code> on a brand-new seller address is expected, not suspicious.
+But on an address claiming years of activity, a zero nonce is a contradiction.</p>
+
+<h3>Check 3 — read a token balance directly</h3>
+<pre><code># balanceOf(address) = 0x70a08231 + 32-byte padded address
+curl -s -X POST https://base.drpc.org -H 'content-type: application/json' \
+ -d '{"jsonrpc":"2.0","id":1,"method":"eth_call",
+      "params":[{"to":"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "data":"0x70a08231000000000000000000000000deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"},
+       "latest"]}'
+# -&gt; "0x000...2710"</code></pre>
+<p><code>0x2710</code> = 10000 = <strong>0.01 USDC</strong> (6 decimals — another easy place to
+be off by a million). Note what this address actually is: a burn sink holding a rounding
+error. <em>A large-looking balance on an address nobody controls is not revenue.</em></p>
+
+<h3>Check 4 — history, and the trap that ruins it</h3>
+<p>The obvious way to see an address's history is a Blockscout API call:</p>
+<pre><code>curl -s "https://base.blockscout.com/api?module=account&amp;action=txlist&amp;address=$ADDR&amp;sort=desc"</code></pre>
+
+<div class="box warn">
+<strong>The rate limiter returns HTTP 200 with an empty result.</strong> I hit this live
+while writing this page — eight calls in a row to the same query:
+</div>
+
+<pre><code>call 1..7  -&gt;  {"message":"OK","result":[{...}]}
+call 8     -&gt;  {"message":"Too many requests. Increase limits now at
+                     https://dev.blockscout.com","result":null,"status":"0"}</code></pre>
+
+<p>Look closely at that last line. It is <strong>not an HTTP error</strong> — the status code
+was 200. The body carries <code>result: null</code>. Write the obvious parser:</p>
+
+<pre><code>rows = d.get('result', []) or []      # null -&gt; []
+print(f"rows={len(rows)}")             # rows=0</code></pre>
+
+<p>and you have printed <code>rows=0</code> for an address that demonstrably has thousands of
+transactions. Add retries with backoff and it still prints <code>rows=0</code> — every
+attempt, confidently. That output reads as a real finding: <em>this address has never been
+paid.</em> It is a fact about your HTTP client.</p>
+
+<p><strong>The fix is one line: gate the parse on the status field.</strong></p>
+
+<pre><code>if d.get("status") != "1":
+    raise RuntimeError(f"explorer refused: {d.get('message')}")  # UNVERIFIED
+rows = d["result"]</code></pre>
+
+<p>Apply the same discipline to your own stack. Three different zeros get collapsed into one
+and each closes a live conclusion:</p>
+
+<table>
+<tr><th>Zero you see</th><th>What it actually means</th></tr>
+<tr><td>Throttled API → <code>rows=0</code></td><td>Rate limit. Says nothing about the chain.</td></tr>
+<tr><td>Exactly 10,000 rows</td><td>Page cap, not a total. Don't call it "all activity".</td></tr>
+<tr><td>DNS failure → <code>000</code> / empty</td><td>Transport blocked. Mimics "host is dead".</td></tr>
+</table>
+
+<p>When money is on the line, confirm across an independent path. Blockscout can refuse;
+Base JSON-RPC cannot. The RPC above returned a correct answer for the same address at the
+same moment the explorer was throttling me.</p>
+
+<h2>5. Run all four yourself</h2>
+
+<pre><code>ADDR=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+RPC=https://base.drpc.org
+USDC=$ADDR
+
+post() { curl -s --max-time 20 -X POST "$RPC" -H 'content-type: application/json' -d "$1"; }
+
+# 1. contract or EOA?
+post '{"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":["'$ADDR'","latest"]}'
+
+# 2. nonce
+post '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["'$ADDR'","latest"]}'
+
+# 3. USDC balance (0x70a08231 + padded address)
+post '{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"'$USDC'",
+  "data":"0x70a08231000000000000000000000000deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"},
+  "latest"]}'
+
+# 4. history — GATE ON status, or you will invent a zero
+curl -s "https://base.blockscout.com/api?module=account&amp;action=txlist&amp;address=$ADDR&amp;sort=desc" \
+  | jq 'if .status != "1" then "UNVERIFIED: \(.message)" else "\(.result|length) rows" end'</code></pre>
+
+<h2>Where to go next</h2>
+
+<ul>
+<li><a href="https://x402.org">x402.org</a> — the protocol itself</li>
+<li><a href="https://github.com/coinbase/x402">coinbase/x402</a> — reference middleware</li>
+<li><a href="https://eips.ethereum.org/EIPS/eip-3009">EIP-3009</a> —
+    <code>transferWithAuthorization</code>, the signature scheme x402 settles with.
+    Function selector <code>0xe3ee160e</code>.</li>
+<li><a href="https://docs.base.org">docs.base.org</a> — Base chain docs</li>
+<li><a href="https://basescan.org">basescan.org</a> — human-readable explorer</li>
+</ul>
+
+<h2>Corrections and disclosures</h2>
+
+<ul>
+<li>Output above was captured on 4 October 2026. Endpoint behaviour and prices change; re-run
+the commands rather than trusting the pasted values.</li>
+<li>The 402 body and the rejected-bogus-signature response are both <code>content-length: 2</code>.
+I report both as 402 because both were 402 — I did not confirm the internal rejection reason for the
+second, only that no data was served.</li>
+<li>I have not run a payment end-to-end. I have not verified settlement to
+    <code>payTo</code> on either rail. Everything about settlement below is read from the
+    challenge document, not observed.</li>
+<li>No affiliate links on this page. If that changes it will be disclosed here.</li>
+</ul>
+
+<p class="meta">
+Field notes, built and published 2026-10-04. Free to read, no tracking, no newsletter.
+Source: <a href="https://github.com/italeex/x402-field-guide">github.com/italeex/x402-field-guide</a>.
+</p>
+
+</main>
+</body>
+</html>
