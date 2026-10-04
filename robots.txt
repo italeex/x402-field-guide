@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://italeex.github.io/x402-field-guide/sitemap.xml
